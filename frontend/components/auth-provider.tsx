@@ -1,13 +1,11 @@
 "use client"
 
 import { useQueryClient } from "@tanstack/react-query"
-import { Hub } from "aws-amplify/utils"
-import { fetchAuthSession, signOut as amplifySignOut } from "aws-amplify/auth"
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
-import { toast } from "sonner"
+import { createContext, useContext, useEffect, useMemo, useRef } from "react"
+import { useAuth as useOidcAuth } from "react-oidc-context"
 
 import { syncMe } from "@/lib/api"
-import { authErrorMessage, configureAuth, isAuthConfigured } from "@/lib/auth"
+import { onUnauthorized } from "@/lib/auth"
 
 export type AuthUser = {
   sub: string
@@ -27,87 +25,66 @@ type AuthContextValue = AuthState & {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
-/** Reads who is signed in from the ID token; null when nobody is. */
-async function loadUser(): Promise<{ user: AuthUser; idToken: string } | null> {
-  try {
-    const { tokens } = await fetchAuthSession()
-    const idToken = tokens?.idToken
-    const claims = idToken?.payload
-    if (!idToken || !claims?.sub) return null
-    return {
-      idToken: idToken.toString(),
-      user: {
-        sub: String(claims.sub),
-        email: typeof claims.email === "string" ? claims.email : undefined,
-        name: typeof claims.name === "string" ? claims.name : undefined,
-      },
-    }
-  } catch {
-    return null
-  }
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const auth = useOidcAuth()
   const queryClient = useQueryClient()
-  const [state, setState] = useState<AuthState>({ status: "loading", user: null })
-
-  // The sub whose profile was already stored this page load.
   const syncedSub = useRef<string | null>(null)
 
-  const refresh = useCallback(async () => {
-    const loaded = await loadUser()
-    if (!loaded) {
-      setState({ status: "signedOut", user: null })
-      return
+  const status = auth.isLoading ? "loading" : auth.isAuthenticated ? "signedIn" : "signedOut"
+
+  const user: AuthUser | null = useMemo(() => {
+    if (!auth.isAuthenticated || !auth.user) return null
+    return {
+      sub: auth.user.profile.sub || "",
+      email: auth.user.profile.email as string | undefined,
+      name: auth.user.profile.name as string | undefined,
     }
-    setState({ status: "signedIn", user: loaded.user })
-    // Keep the users table current (email, name, provider, last login). Not
-    // critical to the page, so a failure is only logged.
-    if (syncedSub.current !== loaded.user.sub) {
-      syncedSub.current = loaded.user.sub
-      syncMe(loaded.idToken).catch((error) => console.warn("Profile sync failed", error))
-    }
-  }, [])
+  }, [auth.isAuthenticated, auth.user])
+
+  // The API rejected the token: drop the local session, and the auth guard
+  // sends the user back to the landing page.
+  useEffect(() => {
+    onUnauthorized(() => void auth.removeUser())
+  }, [auth])
 
   useEffect(() => {
-    if (!isAuthConfigured) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- no pool, so nobody can be signed in
-      setState({ status: "signedOut", user: null })
-      return
+    if (status === "signedOut") {
+      queryClient.clear()
+      syncedSub.current = null
     }
-    configureAuth()
-    void refresh()
+  }, [status, queryClient])
 
-    return Hub.listen("auth", ({ payload }) => {
-      switch (payload.event) {
-        case "signedIn":
-        case "signInWithRedirect":
-          // Another user's meetings must never show from the cache.
-          queryClient.clear()
-          void refresh()
-          break
-        case "signedOut":
-        case "tokenRefresh_failure":
-          queryClient.clear()
-          syncedSub.current = null
-          setState({ status: "signedOut", user: null })
-          break
-        case "signInWithRedirect_failure":
-          toast.error("Google sign-in failed. Please try again.")
-          break
+  useEffect(() => {
+    if (status === "signedIn" && auth.user?.id_token && user?.sub) {
+      if (syncedSub.current !== user.sub) {
+        syncedSub.current = user.sub
+        syncMe(auth.user.id_token).catch((error) => console.warn("Profile sync failed", error))
       }
-    })
-  }, [queryClient, refresh])
-
-  const signOut = useCallback(async () => {
-    try {
-      await amplifySignOut()
-    } catch (error) {
-      toast.error(authErrorMessage(error))
     }
-  }, [])
+  }, [status, auth.user, user])
 
-  const value = useMemo(() => ({ ...state, refresh, signOut }), [state, refresh, signOut])
+  const refresh = async () => {
+    try {
+      if (auth.isAuthenticated) await auth.signinSilent()
+    } catch (error) {
+      console.warn("Silent renew failed", error)
+    }
+  }
+
+  const signOut = async () => {
+    auth.removeUser()
+    const clientId = process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID
+    const domain = process.env.NEXT_PUBLIC_COGNITO_DOMAIN
+    const logoutUri = typeof window !== "undefined" ? window.location.origin + "/" : ""
+    window.location.href = `https://${domain}/logout?client_id=${clientId}&logout_uri=${logoutUri}`
+  }
+
+  const value = useMemo(() => ({
+    status,
+    user,
+    refresh,
+    signOut
+  }) as AuthContextValue, [status, user, refresh, signOut])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

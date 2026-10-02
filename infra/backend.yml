@@ -186,7 +186,8 @@ Resources:
     Properties:
       DBClusterIdentifier: !Sub "${ProjectName}-db"
       Engine: aurora-postgresql
-      EngineVersion: !If [HasDbEngineVersion, !Ref DbEngineVersion, !Ref "AWS::NoValue"]
+      EngineVersion:
+        !If [HasDbEngineVersion, !Ref DbEngineVersion, !Ref "AWS::NoValue"]
       DatabaseName: !Ref DbName
       MasterUsername: !Ref DbUsername
       MasterUserPassword: !Ref DbPassword
@@ -194,7 +195,7 @@ Resources:
       VpcSecurityGroupIds:
         - !Ref DbSecurityGroup
       StorageEncrypted: true
-      BackupRetentionPeriod: 1        # Aurora's minimum; the continuous backup is free up to the cluster size
+      BackupRetentionPeriod: 1 # Aurora's minimum; the continuous backup is free up to the cluster size
       DeletionProtection: false
       ServerlessV2ScalingConfiguration:
         MinCapacity: !Ref DbMinCapacity
@@ -261,7 +262,8 @@ Resources:
         - !Ref Architecture
       Role: !GetAtt FunctionRole.Arn
       MemorySize: !Ref MemorySize
-      ReservedConcurrentExecutions: !If [HasMaxConcurrency, !Ref MaxConcurrency, !Ref "AWS::NoValue"]
+      ReservedConcurrentExecutions:
+        !If [HasMaxConcurrency, !Ref MaxConcurrency, !Ref "AWS::NoValue"]
       # A paused cluster takes ~15 s to resume on the first connection, so
       # leave room for that on top of the request itself.
       Timeout: 60
@@ -325,13 +327,25 @@ Resources:
 Outputs:
   ApiUrl:
     Description: Base URL of the backend (the function URL, without its trailing slash)
-    Value: !Sub ["https://${Host}", {Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]}]
+    Value:
+      !Sub [
+        "https://${Host}",
+        { Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]] },
+      ]
   HealthUrl:
     Description: Health check
-    Value: !Sub ["https://${Host}/health", {Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]}]
+    Value:
+      !Sub [
+        "https://${Host}/health",
+        { Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]] },
+      ]
   DocsUrl:
     Description: Swagger UI
-    Value: !Sub ["https://${Host}/docs", {Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]}]
+    Value:
+      !Sub [
+        "https://${Host}/docs",
+        { Host: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]] },
+      ]
   FunctionUrlDomain:
     Description: The function URL's host name
     Value: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]

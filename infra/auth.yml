@@ -39,6 +39,9 @@ Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
+      UserPoolTier: ESSENTIALS
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
       UserPoolName: !Sub "${ProjectName}-users"
       # People sign in with their email address; Cognito mails them a code to
       # confirm it on sign-up and to reset a forgotten password.
@@ -78,6 +81,7 @@ Resources:
       UserPoolId: !Ref UserPool
       # Domain prefixes are unique per region across all accounts.
       Domain: !Sub "${ProjectName}-${AWS::AccountId}"
+      ManagedLoginVersion: 2
 
   GoogleIdentityProvider:
     Type: AWS::Cognito::UserPoolIdentityProvider
@@ -126,6 +130,13 @@ Resources:
       AllowedOAuthScopes: [openid, email, profile]
       CallbackURLs: !Ref AppUrls
       LogoutURLs: !Ref AppUrls
+
+  UserPoolBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref UserPoolClient
+      UseCognitoProvidedValues: true
 
 Outputs:
   UserPoolId:

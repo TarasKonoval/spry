@@ -1,62 +1,49 @@
-import { Amplify } from "aws-amplify"
-import { fetchAuthSession } from "aws-amplify/auth"
-// Completes Google sign-in when Cognito redirects back to the app.
-import "aws-amplify/auth/enable-oauth-listener"
+import { User } from "oidc-client-ts"
+import type { AuthProviderProps } from "react-oidc-context"
 
-export const authConfig = {
-  userPoolId: process.env.NEXT_PUBLIC_COGNITO_USER_POOL_ID ?? "",
-  clientId: process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID ?? "",
-  // Cognito's OAuth domain, e.g. <prefix>.auth.us-east-1.amazoncognito.com
-  domain: process.env.NEXT_PUBLIC_COGNITO_DOMAIN ?? "",
-  googleEnabled: process.env.NEXT_PUBLIC_COGNITO_GOOGLE_ENABLED === "true",
+const userPoolId = process.env.NEXT_PUBLIC_COGNITO_USER_POOL_ID ?? ""
+const clientId = process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID ?? ""
+// Pool IDs look like "us-east-1_AbC123": the region is the part before the underscore.
+const region = userPoolId.split("_")[0]
+
+export const isAuthConfigured = Boolean(userPoolId && clientId)
+
+/** Settings for react-oidc-context: Cognito's managed login, redirecting back to "/". */
+export const oidcConfig: AuthProviderProps = {
+  authority: `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`,
+  client_id: clientId,
+  // Only read in the browser; the server render never starts a sign-in.
+  redirect_uri: typeof window !== "undefined" ? `${window.location.origin}/` : "",
+  response_type: "code",
+  scope: "openid email profile",
+  // Drop ?code=…&state=… from the address bar once the sign-in is complete.
+  onSigninCallback: () => {
+    window.history.replaceState({}, document.title, window.location.pathname)
+  },
 }
 
-export const isAuthConfigured = Boolean(authConfig.userPoolId && authConfig.clientId)
+/** Where oidc-client-ts keeps the signed-in user (its default: sessionStorage). */
+const storageKey = `oidc.user:${oidcConfig.authority}:${oidcConfig.client_id}`
 
-let configured = false
-
-/** Idempotent; browser only, because the OAuth redirect URLs use the page's origin. */
-export function configureAuth() {
-  if (configured || !isAuthConfigured || typeof window === "undefined") return
-  const home = `${window.location.origin}/`
-  Amplify.configure({
-    Auth: {
-      Cognito: {
-        userPoolId: authConfig.userPoolId,
-        userPoolClientId: authConfig.clientId,
-        loginWith: {
-          email: true,
-          ...(authConfig.domain
-            ? {
-                oauth: {
-                  domain: authConfig.domain,
-                  scopes: ["openid", "email", "profile"],
-                  redirectSignIn: [home],
-                  redirectSignOut: [home],
-                  responseType: "code" as const,
-                },
-              }
-            : {}),
-        },
-      },
-    },
-  })
-  configured = true
+/**
+ * The current access token, kept fresh by oidc-client-ts's silent renew. Read
+ * from storage rather than React state so the API client can call it anywhere.
+ */
+export function getAccessToken(): string | null {
+  if (!isAuthConfigured || typeof window === "undefined") return null
+  const stored = window.sessionStorage.getItem(storageKey)
+  if (!stored) return null
+  const user = User.fromStorageString(stored)
+  return user.expired ? null : user.access_token
 }
 
-/** The current access token, refreshed by Amplify when it is about to expire. */
-export async function getAccessToken(): Promise<string | null> {
-  if (!isAuthConfigured) return null
-  configureAuth()
-  try {
-    const session = await fetchAuthSession()
-    return session.tokens?.accessToken?.toString() ?? null
-  } catch {
-    return null
-  }
+let unauthorizedHandler: () => void = () => {}
+
+/** Registered by the auth provider: what to do when the API rejects the session. */
+export function onUnauthorized(handler: () => void) {
+  unauthorizedHandler = handler
 }
 
-/** Cognito errors carry a readable message; fall back for anything else. */
-export function authErrorMessage(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "Something went wrong."
+export function handleUnauthorized() {
+  unauthorizedHandler()
 }
