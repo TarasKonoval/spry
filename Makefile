@@ -39,6 +39,14 @@ AUTH_STACK ?= $(PROJECT_NAME)-auth
 APP_STACK ?= $(PROJECT_NAME)-backend
 ECR_STACK ?= $(PROJECT_NAME)-ecr
 FRONTEND_STACK ?= $(PROJECT_NAME)-frontend
+REPORTS_STACK ?= $(PROJECT_NAME)-reports
+# infra/reports.yml with the mailer's code inlined (gitignored; inside the repo
+# because the containerised CLI only sees the repository).
+REPORTS_TEMPLATE = infra/.build/reports.yml
+MAILER_SOURCE = backend/app/reports/mailer.py
+# When the weekly report is built, in APP_TIMEZONE. To test it, deploy once with
+# SCHEDULE='rate(5 minutes)', then again without it: every run wakes Aurora.
+SCHEDULE ?= cron(0 7 ? * MON *)
 IMAGE_TAG ?= latest
 # x86_64 or arm64. arm64 is ~20% cheaper on Lambda and builds natively on
 # Apple Silicon; the image platform is derived from it so the two cannot drift.
@@ -62,6 +70,11 @@ stack-output = $(AWS) cloudformation describe-stacks --stack-name $(1) \
 # $(call stack-outputs,<stack>): every output as "Key<TAB>Value" lines
 stack-outputs = $(AWS) cloudformation describe-stacks --stack-name $(1) \
 	--query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output text
+
+# $(call image-digest,<repository uri>): the digest IMAGE_TAG points at
+image-digest = $(AWS) ecr describe-images --repository-name "$${$(1)\#*/}" \
+	--image-ids imageTag=$(IMAGE_TAG) --query 'imageDetails[0].imageDigest' \
+	--output text | tr -d '[:space:]'
 
 # $(call wait-stack-idle,<stack>)
 wait-stack-idle = while status=$$($(AWS) cloudformation describe-stacks --stack-name $(1) \
@@ -92,8 +105,15 @@ define require-db-password
 		exit 1; }
 endef
 
-.PHONY: help up up-build down down-v logs ps migrate revision seed test lint fmt shell-backend psql \
+define require-reports-email
+	@test -n "$(REPORTS_EMAIL)" || { \
+		echo "REPORTS_EMAIL is empty — set it in .env (the verified sender and recipient of the report)"; \
+		exit 1; }
+endef
+
+.PHONY: help up up-build down down-v logs ps migrate revision seed test lint fmt report-local shell-backend psql \
         aws-whoami aws-deploy aws-deploy-auth aws-auth-env aws-ecr aws-push aws-deploy-backend aws-migrate aws-url aws-status aws-logs \
+        aws-deploy-reports report-now aws-reports-logs \
         aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy
 
 help:
@@ -139,6 +159,9 @@ lint: ## Lint backend and frontend
 
 fmt: ## Format the backend code
 	$(COMPOSE) exec backend ruff format .
+
+report-local: ## Print the weekly report CSV from the compose database: make report-local WEEK=2026-W41 (default: last week)
+	@$(COMPOSE) exec -T backend python -m app.reports.weekly $(WEEK)
 
 shell-backend: ## Open a shell in the backend container
 	$(COMPOSE) exec backend sh
@@ -222,9 +245,7 @@ aws-deploy-backend: aws-push ## Deploy the backend to AWS (Lambda function URL +
 			--filters Name=vpc-id,Values=$$vpc Name=default-for-az,Values=true \
 			--query 'Subnets[].SubnetId' --output text | tr '[:space:]' ',' | sed 's/,*$$//'); \
 		repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) | tr -d '[:space:]'); \
-		digest=$$($(AWS) ecr describe-images --repository-name "$${repo#*/}" \
-			--image-ids imageTag=$(IMAGE_TAG) --query 'imageDetails[0].imageDigest' \
-			--output text | tr -d '[:space:]'); \
+		digest=$$($(call image-digest,repo)); \
 		cors="$(AWS_CORS_ORIGINS)"; \
 		if [ -z "$$cors" ]; then \
 			cors=$$($(call stack-output,$(FRONTEND_STACK),AllowedOrigins) 2>/dev/null | tr -d '[:space:]'); \
@@ -276,6 +297,90 @@ aws-status: ## Show the stack outputs and the API function's state
 
 aws-logs: ## Follow the backend function logs
 	$(AWS) logs tail /aws/lambda/$(PROJECT_NAME)-backend --follow
+
+aws-deploy-reports: aws-push ## Deploy the weekly report (bucket, queue, builder, schedule) next to the backend: make aws-deploy-reports [SCHEDULE='rate(5 minutes)']
+	$(require-aws-credentials)
+	$(require-db-password)
+	$(require-reports-email)
+	@fn=$$($(call stack-output,$(APP_STACK),FunctionName) 2>/dev/null | tr -d '[:space:]'); \
+		case "$$fn" in ""|None) echo "No backend found — run: make aws-deploy-backend"; exit 1 ;; esac; \
+		set -- $$($(AWS) lambda get-function-configuration --function-name "$$fn" \
+			--query '[VpcConfig.VpcId, join(`,`, VpcConfig.SubnetIds), VpcConfig.SecurityGroupIds[0]]' \
+			--output text | tr -d '\r'); \
+		vpc=$$1; subnets=$$2; sg=$$3; \
+		test -n "$$sg" -a "$$vpc" != "None" || { echo "$$fn is not in a VPC — cannot place the builder"; exit 1; }; \
+		db=$$($(call stack-output,$(APP_STACK),DatabaseEndpoint) | tr -d '[:space:]'); \
+		explicit=$$($(AWS) ec2 describe-route-tables \
+			--filters Name=association.subnet-id,Values=$$subnets \
+			--query 'RouteTables[].RouteTableId' --output text); \
+		main=$$($(AWS) ec2 describe-route-tables \
+			--filters Name=vpc-id,Values=$$vpc Name=association.main,Values=true \
+			--query 'RouteTables[].RouteTableId' --output text); \
+		tables=$$(echo $$explicit $$main | tr -s '[:space:]' '\n' | sort -u | paste -sd, -); \
+		ours=$$($(AWS) cloudformation describe-stack-resource --stack-name $(REPORTS_STACK) \
+			--logical-resource-id S3Endpoint --query 'StackResourceDetail.PhysicalResourceId' \
+			--output text 2>/dev/null | tr -d '[:space:]'); \
+		others=$$($(AWS) ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=$$vpc \
+			Name=service-name,Values=com.amazonaws.$(AWS_REGION).s3 Name=vpc-endpoint-type,Values=Gateway \
+			Name=vpc-endpoint-state,Values=pending,available \
+			--query 'VpcEndpoints[].VpcEndpointId' --output text | tr -s '[:space:]' '\n' \
+			| grep -v -x -e "$${ours:-none}" -e '' | paste -sd, -); \
+		if [ -n "$$others" ]; then endpoint=false; \
+			echo "Reusing the VPC's S3 gateway endpoint $$others — it must cover route tables $$tables"; \
+		else endpoint=true; fi; \
+		repo=$$($(call stack-output,$(ECR_STACK),RepositoryUri) | tr -d '[:space:]'); \
+		digest=$$($(call image-digest,repo)); \
+		echo "vpc=$$vpc subnets=$$subnets sg=$$sg route-tables=$$tables create-s3-endpoint=$$endpoint"; \
+		echo "image=$$repo@$$digest schedule=$(SCHEDULE)"; \
+		test $$(wc -c < $(MAILER_SOURCE)) -le 4096 || { \
+			echo "$(MAILER_SOURCE) is over CloudFormation's 4096-character inline code limit"; exit 1; }; \
+		mkdir -p $(dir $(REPORTS_TEMPLATE)); \
+		awk 'FNR == NR { code = code "          " $$0 "\n"; next } \
+			/ZipFile: MAILER_SOURCE/ { sub(/MAILER_SOURCE.*/, "|"); printf "%s\n%s", $$0, code; next } \
+			{ print }' $(MAILER_SOURCE) infra/reports.yml > $(REPORTS_TEMPLATE); \
+		$(call wait-stack-idle,$(REPORTS_STACK)); \
+		$(call clear-failed-create,$(REPORTS_STACK)); \
+		$(AWS) cloudformation deploy \
+			--stack-name $(REPORTS_STACK) \
+			--template-file $(REPORTS_TEMPLATE) \
+			--capabilities CAPABILITY_IAM \
+			--no-fail-on-empty-changeset \
+			$(STACK_TAGS) \
+			--parameter-overrides \
+				"ProjectName=$(PROJECT_NAME)" \
+				ImageUri="$$repo@$$digest" \
+				"Architecture=$(AWS_LAMBDA_ARCH)" \
+				"VpcId=$$vpc" \
+				"SubnetIds=$$subnets" \
+				"SecurityGroupId=$$sg" \
+				"RouteTableIds=$$tables" \
+				"CreateS3Endpoint=$$endpoint" \
+				"DbEndpoint=$$db" \
+				"DbPassword=$(AWS_DB_PASSWORD)" \
+				"AppTimezone=$(or $(APP_TIMEZONE),Europe/Kyiv)" \
+				"ScheduleExpression=$(SCHEDULE)" \
+				"ReportsEmail=$(REPORTS_EMAIL)"
+	@echo "Reports go to s3://$$($(call stack-output,$(REPORTS_STACK),BucketName) | tr -d '[:space:]')/reports/"
+	@verified=$$($(AWS) sesv2 get-email-identity --email-identity "$(REPORTS_EMAIL)" \
+			--query VerifiedForSendingStatus --output text | tr -d '[:space:]'); \
+		if [ "$$verified" = "True" ]; then echo "SES identity for REPORTS_EMAIL: verified"; \
+		else echo "SES identity for REPORTS_EMAIL: not verified yet — click the link AWS emailed to it (valid 24 hours)"; fi
+
+report-now: ## Queue a report build on AWS, e.g. to rebuild an old one: make report-now [WEEK=2026-W41] (default: last week)
+	$(require-aws-credentials)
+	@case "$(WEEK)" in \
+		"") body='{"week": null, "source": "make"}' ;; \
+		[0-9][0-9][0-9][0-9]-W[0-9][0-9]) body='{"week": "$(WEEK)", "source": "make"}' ;; \
+		*) echo "WEEK looks like 2026-W41, not $(WEEK)"; exit 1 ;; \
+	esac; \
+		queue=$$($(call stack-output,$(REPORTS_STACK),QueueUrl) 2>/dev/null | tr -d '[:space:]'); \
+		case "$$queue" in ""|None) echo "No report queue — run: make aws-deploy-reports"; exit 1 ;; esac; \
+		echo "Queueing $$body"; \
+		$(AWS) sqs send-message --queue-url "$$queue" --message-body "$$body" \
+			--query MessageId --output text
+
+aws-reports-logs: ## Follow the report builder's logs
+	$(AWS) logs tail /aws/lambda/$(PROJECT_NAME)-report-builder --follow
 
 aws-frontend-cert: ## Request and validate the HTTPS certificate for AWS_FRONTEND_DOMAIN (in us-east-1)
 	$(require-aws-credentials)
@@ -350,14 +455,19 @@ aws-frontend-url: ## Print the deployed site URL
 
 aws-destroy: ## Delete every stack, including the database and its data
 	$(require-aws-credentials)
-	@printf 'Delete %s, %s, %s and %s? The Aurora cluster and all its data, and every user account, go with them (no snapshot). Type yes: ' \
-		"$(FRONTEND_STACK)" "$(APP_STACK)" "$(AUTH_STACK)" "$(ECR_STACK)"; \
+	@printf 'Delete %s, %s, %s, %s and %s? The Aurora cluster and all its data, every user account and every report go with them (no snapshot). Type yes: ' \
+		"$(REPORTS_STACK)" "$(FRONTEND_STACK)" "$(APP_STACK)" "$(AUTH_STACK)" "$(ECR_STACK)"; \
 		read answer; test "$$answer" = "yes" || { echo "Aborted."; exit 1; }
-	@bucket=$$($(call stack-output,$(FRONTEND_STACK),BucketName) 2>/dev/null | tr -d '[:space:]'); \
+	@for stack in $(REPORTS_STACK) $(FRONTEND_STACK); do \
+		bucket=$$($(call stack-output,$$stack,BucketName) 2>/dev/null | tr -d '[:space:]'); \
 		if [ -n "$$bucket" ] && [ "$$bucket" != "None" ]; then \
 			echo "Emptying s3://$$bucket"; \
 			$(AWS) s3 rm "s3://$$bucket" --recursive --only-show-errors || true; \
-		fi
+		fi; \
+	done
+	@# The report builder uses the backend's security group, so it goes first.
+	-$(AWS) cloudformation delete-stack --stack-name $(REPORTS_STACK)
+	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(REPORTS_STACK)
 	-$(AWS) cloudformation delete-stack --stack-name $(FRONTEND_STACK)
 	-$(AWS) cloudformation wait stack-delete-complete --stack-name $(FRONTEND_STACK)
 	@echo "Deleting $(APP_STACK) — Lambda releases its VPC network interfaces slowly, allow ~20 minutes."
