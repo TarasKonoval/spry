@@ -76,7 +76,13 @@ async def test_search_filters_by_name_and_description(client, meeting_payload):
     start, _ = day_window(today())
     await client.post(
         "/api/v1/meetings",
-        json=meeting_payload | {"name": "Retrospective", "description": "Look back at the sprint"},
+        json=meeting_payload
+        | {
+            "name": "Retrospective",
+            "description": "Look back at the sprint",
+            "starts_at": _iso(start + timedelta(hours=10)),
+            "ends_at": _iso(start + timedelta(hours=11)),
+        },
     )
     await client.post(
         "/api/v1/meetings",
