@@ -11,7 +11,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Meeting, Participant
-from app.schemas import MeetingCreate
+from app.schemas import AgendaWrite, MeetingCreate
 
 
 class MeetingRepository:
@@ -83,6 +83,16 @@ class MeetingRepository:
             Participant(name=p.name, email=p.email, position=index)
             for index, p in enumerate(payload.participants)
         ]
+        await self.session.commit()
+        await self.session.refresh(meeting)
+        return meeting
+
+    async def set_agenda(self, meeting: Meeting, payload: AgendaWrite) -> Meeting:
+        """Replace the agenda. A new AI suggestion replaces the stored one; without
+        one the stored suggestion stays, since later edits still correct it."""
+        meeting.agenda = payload.model_dump(mode="json", include={"items", "action_items"})
+        if payload.ai_suggestion is not None:
+            meeting.ai_suggestion = payload.ai_suggestion.model_dump(mode="json")
         await self.session.commit()
         await self.session.refresh(meeting)
         return meeting

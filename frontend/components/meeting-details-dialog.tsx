@@ -1,7 +1,18 @@
 "use client"
 
 import { useRef } from "react"
-import { CalendarDays, Clock, Mail, MapPin, Pencil, Trash2, Users } from "lucide-react"
+import {
+  CalendarDays,
+  CircleCheck,
+  Clock,
+  ListChecks,
+  Mail,
+  MapPin,
+  Pencil,
+  Plus,
+  Trash2,
+  Users,
+} from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -20,6 +31,7 @@ import {
   formatTimeRange,
   initials,
 } from "@/lib/datetime"
+import { isParserConfigured } from "@/lib/parser"
 import type { Meeting } from "@/lib/types"
 
 export function MeetingDetailsDialog({
@@ -27,12 +39,14 @@ export function MeetingDetailsDialog({
   open,
   onOpenChange,
   onEdit,
+  onEditAgenda,
   onDelete,
 }: {
   meeting?: Meeting
   open: boolean
   onOpenChange: (open: boolean) => void
   onEdit: (meeting: Meeting) => void
+  onEditAgenda: (meeting: Meeting) => void
   onDelete: (meeting: Meeting) => void
 }) {
   const editRef = useRef<HTMLButtonElement>(null)
@@ -79,6 +93,72 @@ export function MeetingDetailsDialog({
           {meeting.description ? (
             <p className="text-sm leading-relaxed whitespace-pre-wrap">{meeting.description}</p>
           ) : null}
+
+          <Separator />
+
+          <section className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="flex items-center gap-2 text-sm font-semibold">
+                <ListChecks className="size-4" aria-hidden />
+                Agenda
+              </h3>
+              <Button variant="outline" size="sm" onClick={() => onEditAgenda(meeting)}>
+                {meeting.agenda ? <Pencil aria-hidden /> : <Plus aria-hidden />}
+                {meeting.agenda ? "Edit agenda" : "Add agenda"}
+              </Button>
+            </div>
+            {meeting.agenda ? (
+              <>
+                <ol className="space-y-1.5 text-sm">
+                  {meeting.agenda.items.map((item, index) => (
+                    <li key={index} className="flex items-baseline gap-2">
+                      <span className="text-muted-foreground w-5 shrink-0 text-right tabular-nums">
+                        {index + 1}.
+                      </span>
+                      <span className="min-w-0 flex-1">{item.topic}</span>
+                      {item.owner ? (
+                        <span className="text-muted-foreground truncate">{item.owner}</span>
+                      ) : null}
+                      {item.minutes ? (
+                        <span className="tint-teal shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums">
+                          {item.minutes} min
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ol>
+                {meeting.agenda.action_items.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <h4 className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">
+                      Action items
+                    </h4>
+                    <ul className="space-y-1.5 text-sm">
+                      {meeting.agenda.action_items.map((action, index) => (
+                        <li key={index} className="flex items-baseline gap-2">
+                          <CircleCheck
+                            className="text-muted-foreground size-3.5 shrink-0 translate-y-0.5"
+                            aria-hidden
+                          />
+                          <span className="min-w-0 flex-1">{action.task}</span>
+                          <span className="text-muted-foreground shrink-0 text-xs">
+                            {[action.owner, action.due ? `by ${formatLongDate(action.due)}` : null]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <p className="text-muted-foreground text-sm">
+                {isParserConfigured
+                  ? "No agenda yet. Type one, or paste an email or notes and check the draft."
+                  : "No agenda yet."}
+              </p>
+            )}
+          </section>
 
           <Separator />
 

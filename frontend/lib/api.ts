@@ -1,5 +1,6 @@
 import { getAccessToken, handleUnauthorized } from "@/lib/auth"
 import type {
+  AgendaInput,
   ApiErrorBody,
   ApiErrorDetail,
   Meeting,
@@ -89,6 +90,14 @@ export function createMeeting(payload: MeetingCreateInput) {
 
 export function updateMeeting(id: string, payload: MeetingCreateInput) {
   return request<Meeting>(`/api/v1/meetings/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+/** Replaces the meeting's agenda; the parser only suggests, this is the write. */
+export function saveAgenda(id: string, payload: AgendaInput) {
+  return request<Meeting>(`/api/v1/meetings/${id}/agenda`, {
     method: "PUT",
     body: JSON.stringify(payload),
   })

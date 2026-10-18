@@ -7,6 +7,44 @@ export type Participant = {
   position: number
 }
 
+// Mirrors backend/app/schemas/agenda.py.
+
+export type AgendaItem = {
+  topic: string
+  owner: string | null
+  minutes: number | null
+}
+
+export type ActionItem = {
+  task: string
+  owner: string | null
+  due: string | null
+}
+
+export type Agenda = {
+  items: AgendaItem[]
+  action_items: ActionItem[]
+}
+
+/** What the agenda parser suggests: the contract its model answer must meet. */
+export type ParsedAgenda = Agenda & {
+  title: string | null
+  starts_at: string | null
+  duration_minutes: number | null
+  language: string
+}
+
+/** The parser's answer as received, sent back on Save so the API keeps it. */
+export type AiSuggestion = {
+  suggestion: ParsedAgenda
+  model: string
+  prompt_version: string
+}
+
+export type AgendaInput = Agenda & {
+  ai_suggestion?: AiSuggestion | null
+}
+
 export type Meeting = {
   id: string
   name: string
@@ -15,6 +53,7 @@ export type Meeting = {
   starts_at: string
   ends_at: string
   participants: Participant[]
+  agenda: Agenda | null
   created_at: string
   updated_at: string
 }

@@ -2,8 +2,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { createMeeting, deleteMeeting, listMeetings, updateMeeting } from "@/lib/api"
-import type { MeetingCreateInput } from "@/lib/types"
+import { createMeeting, deleteMeeting, listMeetings, saveAgenda, updateMeeting } from "@/lib/api"
+import type { AgendaInput, MeetingCreateInput } from "@/lib/types"
 
 /** Shared cache key: the list and the header menu read the same entry. */
 export const meetingsKey = (date?: string) => ["meetings", { date: date ?? "today" }] as const
@@ -28,6 +28,14 @@ export function useUpdateMeeting() {
   return useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: MeetingCreateInput }) =>
       updateMeeting(id, payload),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["meetings"] }),
+  })
+}
+
+export function useSaveAgenda() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: AgendaInput }) => saveAgenda(id, payload),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["meetings"] }),
   })
 }

@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 
+import { AgendaFormDialog } from "@/components/agenda-form-dialog"
 import { AppHeader } from "@/components/app-header"
 import { DeleteMeetingDialog } from "@/components/delete-meeting-dialog"
 import { MeetingDetailsDialog } from "@/components/meeting-details-dialog"
@@ -17,6 +18,7 @@ type DialogState =
   | { kind: "form"; meeting?: Meeting }
   | { kind: "details"; meeting: Meeting }
   | { kind: "delete"; meeting: Meeting }
+  | { kind: "agenda"; meeting: Meeting }
 
 export function TodayPage({ initialDialogOpen = false }: { initialDialogOpen?: boolean }) {
   const [dialog, setDialog] = useState<DialogState>(
@@ -42,6 +44,9 @@ export function TodayPage({ initialDialogOpen = false }: { initialDialogOpen?: b
   const onView = (meeting: Meeting) => open({ kind: "details", meeting })
   const onEdit = (meeting: Meeting) => open({ kind: "form", meeting })
   const onDelete = (meeting: Meeting) => open({ kind: "delete", meeting })
+  const onEditAgenda = (meeting: Meeting) => open({ kind: "agenda", meeting })
+  // Closing the agenda form (Save or Cancel) goes back to the meeting it belongs to.
+  const backToDetails = () => (current ? open({ kind: "details", meeting: current }) : close())
 
   return (
     <>
@@ -77,7 +82,13 @@ export function TodayPage({ initialDialogOpen = false }: { initialDialogOpen?: b
         onOpenChange={(isOpen) => !isOpen && close()}
         meeting={current}
         onEdit={onEdit}
+        onEditAgenda={onEditAgenda}
         onDelete={onDelete}
+      />
+      <AgendaFormDialog
+        open={dialog.kind === "agenda"}
+        onOpenChange={(isOpen) => !isOpen && backToDetails()}
+        meeting={current}
       />
       <DeleteMeetingDialog
         open={dialog.kind === "delete"}

@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 from app.config import settings
+from app.schemas.agenda import AgendaRead
 
 MAX_PARTICIPANTS = 50
 
@@ -103,6 +104,7 @@ class MeetingRead(BaseModel):
     starts_at: datetime
     ends_at: datetime
     participants: list[ParticipantRead]
+    agenda: AgendaRead | None = None
     created_at: datetime
     updated_at: datetime
 

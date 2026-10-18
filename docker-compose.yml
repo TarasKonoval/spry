@@ -58,6 +58,8 @@ services:
       NEXT_PUBLIC_COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-}
       NEXT_PUBLIC_COGNITO_DOMAIN: ${COGNITO_DOMAIN:-}
       NEXT_PUBLIC_COGNITO_GOOGLE_ENABLED: ${COGNITO_GOOGLE_ENABLED:-false}
+      # From `make aws-ai-url`: the deployed parser, which allows localhost:3000.
+      NEXT_PUBLIC_PARSER_URL: ${PARSER_URL:-}
       WATCHPACK_POLLING: "true"
     ports:
       - "${FRONTEND_PORT:-3000}:3000"

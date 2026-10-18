@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # empty they are fetched from Cognito on first use.
     cognito_jwks: str = ""
 
+    # The agenda parser (app.ai.agenda): Claude through Amazon Bedrock. The model
+    # is configuration so a cheaper one can be tried without a code change.
+    aws_region: str = "us-east-1"
+    parser_model: str = "anthropic.claude-opus-5-5"
+    # Longer pasted text is refused with 413 before the model is called.
+    parser_max_chars: int = 10_000
+
     @field_validator("app_timezone")
     @classmethod
     def _validate_timezone(cls, value: str) -> str:
