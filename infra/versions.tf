@@ -28,11 +28,12 @@ terraform {
 provider "aws" {
   region = var.region
 
-  # The tag every stack carried. ManagedBy = "terraform" comes in the PR after
-  # the migration: adding it now would show as a change on every resource.
+  # On every resource that takes tags: PROJECT_NAME, the tag every stack
+  # carried, and who manages the resource now.
   default_tags {
     tags = {
       PROJECT_NAME = var.project_name
+      ManagedBy    = "terraform"
     }
   }
 }
