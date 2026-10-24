@@ -348,12 +348,6 @@ resource "aws_lambda_function" "mailer" {
       REPORTS_TO   = var.reports_email
     }
   }
-
-  # Migration PR only: CloudFormation's zip of the same code has another hash.
-  # Remove in the next PR, whose plan then redeploys mailer.py once.
-  lifecycle {
-    ignore_changes = [filename, source_code_hash]
-  }
 }
 
 # Re-created, not imported: CloudFormation's statement id was generated. The old

@@ -1,8 +1,8 @@
 """Report mailer: a new reports/*.csv in S3 -> that CSV, attached, through SES.
 
 Runs outside the VPC (SES is on the internet) and never touches the database.
-`make aws-deploy-reports` inlines this file into infra/reports.yml, so it
-imports nothing from app and must stay under the 4096-character ZipFile limit.
+Terraform zips this one file as index.py (infra/reports.tf) and deploys it, so
+it imports nothing from app.
 It only reads from S3: writing into reports/ would trigger itself forever.
 """
 
