@@ -1,0 +1,26 @@
+# What a CLI-driven HCP Terraform run uploads. The workspace's working directory
+# is infra, so `terraform plan` from infra/ uploads this whole repository; only
+# infra/ and backend/app/reports/mailer.py are needed.
+
+# Never upload these: local credentials and settings.
+.env
+.env.*
+!.env.example
+
+# Large, and nothing Terraform reads.
+.git/
+node_modules/
+frontend/
+docs/
+notes/
+backend/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+
+# Local Terraform files.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+infra/.build/
