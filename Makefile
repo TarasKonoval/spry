@@ -93,6 +93,8 @@ GCP_IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
 GCP_BUILD_SA = spry-build@$(GCP_PROJECT).iam.gserviceaccount.com
 GCP_BUILD_BUCKET = $(GCP_PROJECT)-build-source
 TF_GCP = $(TERRAFORM) -chdir=gcp
+# A literal comma for $(if ...): gcloud takes the job's args comma-separated.
+comma := ,
 TF_GCP_BOOTSTRAP = $(TERRAFORM) -chdir=gcp/bootstrap
 # The Firebase CLI, from npm on first use. Signs in through `firebase login`,
 # or falls back to your application default credentials.
@@ -187,9 +189,9 @@ migrate: ## Apply database migrations
 revision: ## Autogenerate a migration: make revision m="add column"
 	$(COMPOSE) exec backend alembic revision --autogenerate -m "$(m)"
 
-seed: ## Insert demo meetings for today for one user: make seed owner=<cognito-sub>
-	@test -n "$(owner)" || { echo "Usage: make seed owner=<cognito-sub> (the user's sub from the Cognito console)"; exit 1; }
-	$(COMPOSE) exec backend python -m app.seed "$(owner)"
+seed: ## Insert demo meetings on a day with none for one user: make seed owner=<cognito-sub> [date=YYYY-MM-DD] (default: today)
+	@test -n "$(owner)" || { echo "Usage: make seed owner=<cognito-sub> [date=YYYY-MM-DD] (the user's sub from the Cognito console)"; exit 1; }
+	$(COMPOSE) exec backend python -m app.seed "$(owner)" $(date)
 
 test: ## Run the backend test suite against a throwaway database
 	$(COMPOSE) exec db psql -U app -d postgres -tc \
@@ -558,9 +560,9 @@ gcp-deploy-backend: gcp-build ## Ship the new image: migrate with the job, then 
 gcp-migrate: ## Apply database migrations on Cloud SQL (runs the migrate job)
 	$(GCP) run jobs execute $(GCP_JOB) --region $(GCP_REGION) --wait
 
-gcp-seed: ## Migrate, then insert demo meetings for today for one user: make gcp-seed owner=<cognito-sub>
-	@test -n "$(owner)" || { echo "Usage: make gcp-seed owner=<cognito-sub> (the sub of your Cognito user)"; exit 1; }
-	$(GCP) run jobs execute $(GCP_JOB) --region $(GCP_REGION) --wait --args python,-m,app.seed,$(owner)
+gcp-seed: ## Migrate, then insert demo meetings on a day with none: make gcp-seed owner=<cognito-sub> [date=YYYY-MM-DD] (default: today)
+	@test -n "$(owner)" || { echo "Usage: make gcp-seed owner=<cognito-sub> [date=YYYY-MM-DD] (the sub of your Cognito user)"; exit 1; }
+	$(GCP) run jobs execute $(GCP_JOB) --region $(GCP_REGION) --wait --args python,-m,app.seed,$(owner)$(if $(date),$(comma)$(date))
 
 gcp-url: ## Print the Cloud Run URL of the API
 	@$(GCP) run services describe $(GCP_SERVICE) --region $(GCP_REGION) --format 'value(status.url)'
