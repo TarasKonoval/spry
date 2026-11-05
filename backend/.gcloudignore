@@ -1,0 +1,10 @@
+# What make gcp-build leaves out of the upload to Cloud Build (the same as
+# .dockerignore, plus the tests the image does not need).
+.gcloudignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+tests/

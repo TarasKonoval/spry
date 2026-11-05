@@ -46,8 +46,11 @@ locals {
   db_endpoint        = data.aws_cloudformation_stack.backend.outputs["DatabaseEndpoint"]
 
   # The site's origins, e.g. ["https://d123.cloudfront.net"], empty before the
-  # frontend exists.
-  site_origins = var.frontend_stack_exists ? split(",", data.aws_cloudformation_stack.frontend[0].outputs["AllowedOrigins"]) : []
+  # frontend exists, plus the copies served from other clouds (gcp/).
+  site_origins = concat(
+    var.frontend_stack_exists ? split(",", data.aws_cloudformation_stack.frontend[0].outputs["AllowedOrigins"]) : [],
+    var.extra_site_origins,
+  )
   local_origin = "http://localhost:${var.frontend_port}"
 
   # Named, not referenced, so the roles do not depend on the bucket.

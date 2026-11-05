@@ -1,0 +1,12 @@
+# The backend image for Cloud Run, built in Cloud Build so nothing large leaves
+# the laptop: make gcp-build uploads backend/ (a few hundred KB) and the build
+# pushes to Artifact Registry. Cloud Build's machines are linux/amd64, what
+# Cloud Run runs. The plain Dockerfile: no Lambda runtime, no Mangum.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_IMAGE}", "."]
+images:
+  - "${_IMAGE}"
+options:
+  # The build runs as spry-build, which may write logs but owns no log bucket.
+  logging: CLOUD_LOGGING_ONLY
