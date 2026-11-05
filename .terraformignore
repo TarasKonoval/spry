@@ -1,6 +1,6 @@
-# What a CLI-driven HCP Terraform run uploads. The workspace's working directory
-# is infra, so `terraform plan` from infra/ uploads this whole repository; only
-# infra/ and backend/app/reports/mailer.py are needed.
+# What an HCP Terraform run uploads. Both workspaces take the whole repository:
+# successfulsuccess-dev (working directory infra) needs infra/ and
+# backend/app/reports/mailer.py; successfulsuccess-gcp-dev (gcp) only gcp/.
 
 # Never upload these: local credentials and settings.
 .env

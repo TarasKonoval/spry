@@ -25,6 +25,17 @@ variable "frontend_stack_exists" {
   description = "false in a new environment until the frontend stack exists: its AllowedOrigins then join the redirect URLs."
 }
 
+variable "extra_site_origins" {
+  type        = list(string)
+  default     = []
+  description = "Origins the site is also served from outside this stack (the Firebase copy in gcp/), allowed as Cognito redirects and parser origins."
+
+  validation {
+    condition     = alltrue([for o in var.extra_site_origins : can(regex("^https://[^/]+$", o))])
+    error_message = "Each extra_site_origins entry must be https://<host>, with no path or trailing slash."
+  }
+}
+
 variable "google_client_id" {
   type        = string
   default     = ""

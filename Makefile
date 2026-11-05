@@ -76,6 +76,28 @@ TF = $(TERRAFORM) -chdir=infra
 # $(call tf-output,<name>): one output of infra/outputs.tf, e.g. user_pool_id
 tf-output = $(TF) output -raw $(1)
 
+# --- Google Cloud (LAB9): the core of the app, described in gcp/ -----------------
+# gcloud runs with your own login (gcloud auth login + application-default
+# login); no service account key exists. gcp/ is applied by its own HCP
+# Terraform workspace; gcp/bootstrap is applied from here, once.
+GCP_PROJECT ?= spry-taras-2026
+GCP_REGION ?= us-central1
+GCLOUD ?= gcloud
+GCP = $(GCLOUD) --project $(GCP_PROJECT) --quiet
+# Names from gcp/*.tf and gcp/bootstrap.
+GCP_SERVICE ?= spry-api
+GCP_JOB ?= spry-migrate
+GCP_DB ?= spry-db
+GCP_REPOSITORY = $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT)/spry
+GCP_IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
+GCP_BUILD_SA = spry-build@$(GCP_PROJECT).iam.gserviceaccount.com
+GCP_BUILD_BUCKET = $(GCP_PROJECT)-build-source
+TF_GCP = $(TERRAFORM) -chdir=gcp
+TF_GCP_BOOTSTRAP = $(TERRAFORM) -chdir=gcp/bootstrap
+# The Firebase CLI, from npm on first use. Signs in through `firebase login`,
+# or falls back to your application default credentials.
+FIREBASE ?= npx --yes firebase-tools
+
 # $(call update-image,<function>,<image uri>): point an image function at a new
 # image and wait until Lambda has switched. Terraform ignores image_uri, so this
 # is the only road code takes to the report builder and the agenda parser. The
@@ -133,7 +155,10 @@ endef
         infra-init infra-fmt infra-plan \
         aws-whoami aws-deploy aws-auth-info aws-auth-env aws-ecr aws-push aws-deploy-backend aws-migrate aws-url aws-status aws-logs \
         aws-deploy-reports report-now aws-reports-logs aws-deploy-ai aws-ai-url aws-ai-logs \
-        aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy
+        aws-frontend-cert aws-deploy-frontend aws-frontend-url aws-destroy \
+        gcp-bootstrap-init gcp-bootstrap-plan gcp-bootstrap-apply gcp-bootstrap-output gcp-bootstrap-destroy \
+        gcp-init gcp-fmt gcp-plan gcp-build gcp-deploy-backend gcp-migrate gcp-seed gcp-url gcp-health gcp-logs \
+        gcp-deploy-frontend gcp-frontend-url gcp-db-start gcp-db-stop gcp-db-status
 
 help:
 	@grep -hE '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -477,3 +502,109 @@ aws-destroy: ## Delete the CloudFormation stacks (frontend, backend + database, 
 	$(AWS) cloudformation delete-stack --stack-name $(ECR_STACK)
 	$(AWS) cloudformation wait stack-delete-complete --stack-name $(ECR_STACK)
 	@echo "All stacks deleted."
+
+# --- Google Cloud (LAB9) -----------------------------------------------------------
+
+gcp-bootstrap-init: ## Download the providers for gcp/bootstrap (local state)
+	$(TF_GCP_BOOTSTRAP) init
+
+gcp-bootstrap-plan: ## Plan gcp/bootstrap with your gcloud login and save the plan for gcp-bootstrap-apply
+	$(TF_GCP_BOOTSTRAP) plan -out=bootstrap.tfplan
+
+gcp-bootstrap-apply: ## Apply the plan gcp-bootstrap-plan saved, nothing else
+	@test -f gcp/bootstrap/bootstrap.tfplan || { echo "No saved plan — run make gcp-bootstrap-plan first"; exit 1; }
+	$(TF_GCP_BOOTSTRAP) apply bootstrap.tfplan
+	@rm -f gcp/bootstrap/bootstrap.tfplan
+
+gcp-bootstrap-output: ## Print what goes on the gcp/ HCP Terraform workspace (TFC_GCP_*)
+	@$(TF_GCP_BOOTSTRAP) output
+
+gcp-bootstrap-destroy: ## Remove the service accounts and the identity pool, once gcp/ has been destroyed
+	@state=$$($(TF_GCP) state list) || { echo "Cannot read the gcp/ state — run terraform login and make gcp-init"; exit 1; }; \
+		left=$$(printf '%s\n' "$$state" | grep -v -e '^data\.' -e '^$$' | grep -c . || true); \
+		test "$$left" = 0 || { echo "The gcp/ state still holds $$left resources — destroy them in HCP Terraform first (Settings → Destruction and Deletion)"; exit 1; }
+	$(TF_GCP_BOOTSTRAP) destroy
+
+gcp-init: ## Connect gcp/ to its HCP Terraform workspace (once, after terraform login)
+	$(TF_GCP) init
+
+gcp-fmt: ## Format and validate the Terraform code in gcp/
+	$(TERRAFORM) fmt -recursive gcp
+	$(TF_GCP) validate
+
+gcp-plan: ## Plan gcp/ in HCP Terraform (speculative: it can never be applied)
+	$(TF_GCP) plan
+
+gcp-build: ## Build the backend image in Cloud Build and push it to Artifact Registry (only backend/ is uploaded)
+	$(GCP) builds submit backend --region $(GCP_REGION) \
+		--config gcp/cloudbuild.yaml --substitutions _IMAGE=$(GCP_REPOSITORY)/api:$(GCP_IMAGE_TAG) \
+		--service-account projects/$(GCP_PROJECT)/serviceAccounts/$(GCP_BUILD_SA) \
+		--gcs-source-staging-dir gs://$(GCP_BUILD_BUCKET)/source
+
+gcp-deploy-backend: gcp-build ## Ship the new image: migrate with the job, then switch the Cloud Run service to it
+	@# By digest, so a rebuilt tag still makes a new revision. Terraform ignores
+	@# the image on both, so this is the only road code takes to Cloud Run.
+	@digest=$$($(GCP) artifacts docker images describe $(GCP_REPOSITORY)/api:$(GCP_IMAGE_TAG) \
+			--format 'value(image_summary.digest)'); \
+		test -n "$$digest" || { echo "No image $(GCP_REPOSITORY)/api:$(GCP_IMAGE_TAG)"; exit 1; }; \
+		image=$(GCP_REPOSITORY)/api@$$digest; \
+		echo "$(GCP_JOB) → $$image"; \
+		$(GCP) run jobs update $(GCP_JOB) --region $(GCP_REGION) --image $$image && \
+		$(GCP) run jobs execute $(GCP_JOB) --region $(GCP_REGION) --wait && \
+		echo "$(GCP_SERVICE) → $$image" && \
+		$(GCP) run services update $(GCP_SERVICE) --region $(GCP_REGION) --image $$image
+	@$(MAKE) --no-print-directory gcp-health
+
+gcp-migrate: ## Apply database migrations on Cloud SQL (runs the migrate job)
+	$(GCP) run jobs execute $(GCP_JOB) --region $(GCP_REGION) --wait
+
+gcp-seed: ## Migrate, then insert demo meetings for today for one user: make gcp-seed owner=<cognito-sub>
+	@test -n "$(owner)" || { echo "Usage: make gcp-seed owner=<cognito-sub> (the sub of your Cognito user)"; exit 1; }
+	$(GCP) run jobs execute $(GCP_JOB) --region $(GCP_REGION) --wait --args python,-m,app.seed,$(owner)
+
+gcp-url: ## Print the Cloud Run URL of the API
+	@$(GCP) run services describe $(GCP_SERVICE) --region $(GCP_REGION) --format 'value(status.url)'
+
+gcp-health: ## Call /health on Cloud Run (checks the database too)
+	@url=$$($(GCP) run services describe $(GCP_SERVICE) --region $(GCP_REGION) --format 'value(status.url)'); \
+		echo "GET $$url/health"; curl -sS --max-time 60 "$$url/health"; echo
+
+gcp-logs: ## Print the API's latest log lines from Cloud Logging
+	$(GCP) logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="$(GCP_SERVICE)"' \
+		--limit 50 --freshness 1h --format 'value(timestamp,severity,textPayload)'
+
+gcp-deploy-frontend: ## Build the static export (API on the same origin) and deploy it to Firebase Hosting
+	@# Sign-in and the parser stay on AWS (ADR 0008), so their settings come
+	@# from infra/'s state. The API base is empty: /api/** is rewritten to Cloud
+	@# Run by firebase.json, on the site's own origin.
+	@pool=$$($(call tf-output,user_pool_id)); \
+		client=$$($(call tf-output,user_pool_client_id)); \
+		domain=$$($(call tf-output,hosted_domain)); \
+		google=$$($(call tf-output,google_enabled)); \
+		parser=$$($(call tf-output,parser_url)); \
+		test -n "$$pool" -a -n "$$client" || { echo "No user pool in the Terraform state — run make infra-init"; exit 1; }; \
+		rm -rf frontend/out; \
+		cd frontend && { test -d node_modules || npm ci; } && \
+		NEXT_OUTPUT=export NEXT_TELEMETRY_DISABLED=1 \
+		NEXT_PUBLIC_API_BASE_URL= \
+		NEXT_PUBLIC_COGNITO_USER_POOL_ID="$$pool" \
+		NEXT_PUBLIC_COGNITO_CLIENT_ID="$$client" \
+		NEXT_PUBLIC_COGNITO_DOMAIN="$$domain" \
+		NEXT_PUBLIC_COGNITO_GOOGLE_ENABLED="$$google" \
+		NEXT_PUBLIC_PARSER_URL="$$parser" \
+		npm run build
+	@! grep -rqs "localhost:8000" frontend/out || { echo "The export still calls localhost:8000 — NEXT_PUBLIC_API_BASE_URL was not empty"; exit 1; }
+	$(FIREBASE) deploy --only hosting --project $(GCP_PROJECT)
+	@$(MAKE) --no-print-directory gcp-frontend-url
+
+gcp-frontend-url: ## Print the Firebase Hosting URL
+	@echo https://$(GCP_PROJECT).web.app
+
+gcp-db-stop: ## Stop Cloud SQL: compute stops billing, the 10 GB disk does not (the API answers 503)
+	$(GCP) sql instances patch $(GCP_DB) --activation-policy NEVER
+
+gcp-db-start: ## Start Cloud SQL again (takes a minute or two)
+	$(GCP) sql instances patch $(GCP_DB) --activation-policy ALWAYS
+
+gcp-db-status: ## Show whether Cloud SQL is running
+	@$(GCP) sql instances describe $(GCP_DB) --format 'value(state,settings.activationPolicy,settings.tier)'

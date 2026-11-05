@@ -8,6 +8,11 @@ region       = "us-east-1"
 frontend_port         = 3000
 frontend_stack_exists = true
 google_client_id      = "332442046477-10ro1fuqjfi2l8jh3aa9ac8np3q0gn1r.apps.googleusercontent.com"
+# The core's copy on Google Cloud (LAB9, gcp/): Firebase Hosting serves both.
+extra_site_origins = [
+  "https://spry-taras-2026.web.app",
+  "https://spry-taras-2026.firebaseapp.com",
+]
 
 # Weekly report
 lambda_architecture = "x86_64"

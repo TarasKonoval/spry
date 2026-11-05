@@ -407,6 +407,148 @@ tier — check your billing console rather than assuming.
   interfaces slowly, and the security groups wait for them.
 - One Aurora instance: there is no reader to fail over to.
 
+## Deploy to Google Cloud (LAB9)
+
+The core of the app — frontend, API and database — also runs on Google Cloud,
+in the project `spry-taras-2026` (`us-central1`). The service choices are in
+[ADR 0008](docs/adr/0008-gcp-service-choices.md).
+
+```
+browser ──https──→ Firebase Hosting (spry-taras-2026.web.app, Next.js static export)
+                     └─ /api/**, /health ──rewrite──→ Cloud Run spry-api ──/cloudsql socket──→ Cloud SQL spry-db
+   ├────https──→ Cognito managed login (AWS, us-east-1)
+   └────https──→ agenda parser Lambda URL (AWS, us-east-1)
+```
+
+**Still on AWS:** sign-in (Cognito; the API checks its tokens from Cloud Run
+as it does on Lambda), the weekly report (Scheduler, SQS, S3, SES) and the
+agenda parser (Bedrock). `infra/` lists the Firebase origins in
+`extra_site_origins`, so Cognito redirects back to them and the parser accepts
+their calls.
+
+Two Terraform configurations, two states, two HCP Terraform workspaces:
+
+- **`gcp/bootstrap/`** is applied once from your laptop, with your own gcloud
+  login and local (gitignored) state. It creates:
+  - the service accounts `terraform`, `spry-api` (Cloud Run's runtime) and
+    `spry-build` (Cloud Build);
+  - their roles. Terraform gets only Cloud Run Admin, Cloud SQL Admin,
+    Artifact Registry Administrator, Secret Manager Admin and Service Usage
+    Admin, plus Service Account User *on `spry-api` only*;
+  - the workload identity pool HCP Terraform signs in through;
+  - Cloud Build's source bucket;
+  - Firebase on the project.
+- **`gcp/`** is applied by the HCP Terraform workspace
+  `successfulsuccess-gcp-dev` (VCS-driven, working directory `gcp`). It enables
+  the APIs and creates Cloud SQL (db-f1-micro, 10 GB SSD), the database, the
+  user, the generated password in Secret Manager, Artifact Registry, the Cloud
+  Run service and the migrate job.
+
+No service account key exists anywhere. HCP Terraform exchanges its run token
+for the `terraform` account's (workload identity federation). The pool trusts
+only this organisation's id and this workspace's id.
+
+### One-time setup
+
+1. `gcloud auth login`, `gcloud auth application-default login`, and a budget
+   alert on the billing account.
+2. Create the workspace in HCP Terraform:
+   - type: Version control workflow, repository `TarasKonoval/spry`;
+   - name: `successfulsuccess-gcp-dev`;
+   - working directory: `gcp`;
+   - trigger: only on changes to `/gcp/*.tf`, `/gcp/terraform.tfvars` and
+     `/gcp/.terraform.lock.hcl`;
+   - apply method: manual.
+
+   Put its id (`ws-…`) and the organisation's id (`org-…`) in
+   `gcp/bootstrap/terraform.tfvars`.
+3. `make gcp-bootstrap-init gcp-bootstrap-plan`, read the plan, then
+   `make gcp-bootstrap-apply`.
+4. On the workspace, add these **environment variables**, none of them
+   sensitive (`make gcp-bootstrap-output` prints them):
+   - `TFC_GCP_PROVIDER_AUTH=true`
+   - `TFC_GCP_RUN_SERVICE_ACCOUNT_EMAIL=terraform@spry-taras-2026.iam.gserviceaccount.com`
+   - `TFC_GCP_WORKLOAD_PROVIDER_NAME=projects/<number>/locations/global/workloadIdentityPools/hcp-terraform/providers/hcp-terraform`
+5. Plan and apply `gcp/` in HCP Terraform. Cloud SQL takes about 10 minutes
+   to create.
+
+### Deploy
+
+```bash
+make gcp-deploy-backend                 # Cloud Build → Artifact Registry, migrate job, Cloud Run, then GET /health
+make gcp-seed owner=<your-cognito-sub>  # demo meetings for today (migrates first)
+make gcp-deploy-frontend                # static export with an empty API base → Firebase Hosting
+```
+
+- **The image is built in Cloud Build** (`gcp/cloudbuild.yaml`). Only
+  `backend/` is uploaded, minus `backend/.gcloudignore`; nothing large leaves
+  the laptop and no local Docker is needed. It is the plain
+  `backend/Dockerfile`. Cloud Run sends HTTP to port 8000, so the Lambda
+  pieces (`Dockerfile.lambda`, Mangum) are not used here.
+- **Code reaches Cloud Run only through the Makefile.** Terraform creates the
+  service and the job from a placeholder image and ignores the image after
+  that, as `infra/` does for the Lambdas. Deploys go by digest.
+- **The data was loaded with migrations + seed, not `pg_dump`** (ADR 0008).
+  The job `spry-migrate` runs `alembic upgrade head`, then its args:
+  `alembic current` by default, or `python -m app.seed <sub>` for
+  `make gcp-seed`. The service itself never migrates on start.
+- **One origin, no CORS.** `firebase.json` rewrites `/api/**` and `/health` to
+  the Cloud Run service, so the export is built with
+  `NEXT_PUBLIC_API_BASE_URL` empty and calls `/api/v1/...` on its own origin.
+- **The API is public.** Unauthenticated invocation is allowed because the API
+  checks the Cognito access token on every `/api/v1` request itself.
+
+`make gcp-url`, `gcp-health`, `gcp-logs` and `gcp-frontend-url` show where
+things are and how they are doing.
+
+### Cost of the lab
+
+List prices in `us-central1`, checked 2026-11-05.
+
+| Piece | Price | This lab (about a week) |
+|---|---|---|
+| Cloud SQL db-f1-micro | $0.0105/h while running | ≈ $1.76 for 168 h |
+| Cloud SQL public IPv4 | ≈ $0.01/h while the instance is *stopped* | replaces the line above while stopped: stopping saves ≈ 5% |
+| Cloud SQL 10 GB SSD | $0.17/GB-month, running or stopped | ≈ $0.40 |
+| Cloud Run (min 0, request-based) | 2M requests and 180,000 vCPU-s free a month | $0 |
+| Cloud Build | 2,500 build-minutes free a month (default pool) | $0 |
+| Artifact Registry | 0.5 GB free; two images kept | $0 – $0.01 |
+| Secret Manager | 6 active versions and 10,000 accesses free | $0 (one version) |
+| Cloud Storage (build sources, deleted after 7 days) | 5 GB-months free | $0 |
+| Firebase Hosting | 10 GB stored, 360 MB a day out at no cost | $0 |
+| Cloud Logging | 50 GiB a month free | $0 |
+| **Total** | | **≈ $2.20 for a week, ≈ $0.30 a day while the instance exists** |
+
+A forgotten instance costs about $9.40 a month running, or about $9.00
+stopped, because of the IP charge. Destroy it when the lab is over.
+
+### Stop, start, destroy
+
+```bash
+make gcp-db-status   # RUNNABLE ALWAYS = running and billing compute
+make gcp-db-stop     # gcloud sql instances patch spry-db --activation-policy NEVER
+make gcp-db-start    # gcloud sql instances patch spry-db --activation-policy ALWAYS
+```
+
+Stopping only saves the compute. Disk and IP keep billing, and `/health`
+answers 503 until the instance is started again. Terraform ignores the
+activation policy, so a plan never restarts a stopped instance.
+
+**Remove everything** when the lab is done:
+
+1. Destroy `gcp/` in HCP Terraform: workspace → Settings → Destruction and
+   Deletion → Queue destroy plan → Confirm & apply. This removes Cloud Run, the
+   job, Cloud SQL with its data, the secret and the registry with its images.
+   A deleted instance's name (`spry-db`) cannot be reused for about a week.
+2. `make gcp-bootstrap-destroy`. It refuses while the `gcp/` state still holds
+   anything, then removes the service accounts, the pool (its id stays reserved
+   for 30 days), the build bucket and the role bindings. The Firebase link and
+   the hosted site remain; Hosting on the free quota costs nothing.
+   `npx firebase-tools hosting:disable` takes the site offline.
+3. Optional, the thorough way: `gcloud projects delete spry-taras-2026` (it is
+   recoverable for 30 days).
+4. A day later, check Billing → Reports.
+
 ## API
 
 Base path `/api/v1`. Full schema at `/docs`. Everything under it needs
@@ -445,6 +587,8 @@ backend/    FastAPI app (api → services → repositories → models), Alembic,
 frontend/   Next.js app, shadcn/ui primitives in components/ui
 infra/      Terraform (*.tf, applied by HCP Terraform) and the CloudFormation
             templates behind the aws-* targets
+gcp/        Terraform for Google Cloud (LAB9): bootstrap/ applied locally once,
+            the rest by its own HCP Terraform workspace
 docker-compose.yml
 ```
 

@@ -29,3 +29,8 @@ crash.log
 LAB5.md
 LAB6.md
 LAB7.md
+LAB9.md
+
+# firebase CLI
+.firebase/
+firebase-debug.log
