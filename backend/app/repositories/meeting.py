@@ -104,10 +104,15 @@ class MeetingRepository:
         await self.session.commit()
         return bool(result.rowcount)
 
-    async def count(self) -> int:
+    async def count_overlapping(self, window_start: datetime, window_end: datetime) -> int:
         return int(
             await self.session.scalar(
-                select(func.count()).select_from(Meeting).where(Meeting.owner_id == self.owner_id)
+                select(func.count())
+                .select_from(Meeting)
+                .where(
+                    Meeting.owner_id == self.owner_id,
+                    *self._overlap_filters(window_start, window_end),
+                )
             )
             or 0
         )

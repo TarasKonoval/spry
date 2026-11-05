@@ -58,7 +58,8 @@ Cognito `sub`.
 
 Demo data is per user: `make seed owner=<sub>` adds a few meetings for today to
 that user (their `sub` is on the user's page in the Cognito console, or `id` in
-`GET /api/v1/me`).
+`GET /api/v1/me`). `date=YYYY-MM-DD` seeds another day instead; a day that
+already has meetings is left alone.
 
 > **Ports already in use?** Every host port is configurable in `.env`
 > (`FRONTEND_PORT`, `BACKEND_PORT`, `POSTGRES_PORT`). If you change the frontend
@@ -74,7 +75,7 @@ make down-v      # stop it and drop the database volume
 make test        # backend test suite (creates meetings_test automatically)
 make lint        # ruff + eslint
 make migrate     # alembic upgrade head
-make seed owner=<sub>  # demo meetings for today for one user
+make seed owner=<sub> [date=YYYY-MM-DD]  # demo meetings for a day with none (default today) for one user
 make psql        # psql shell against the app database
 make help        # everything else
 ```
@@ -476,7 +477,7 @@ only this organisation's id and this workspace's id.
 
 ```bash
 make gcp-deploy-backend                 # Cloud Build → Artifact Registry, migrate job, Cloud Run, then GET /health
-make gcp-seed owner=<your-cognito-sub>  # demo meetings for today (migrates first)
+make gcp-seed owner=<your-cognito-sub> [date=YYYY-MM-DD]  # demo meetings for a day with none, default today (migrates first)
 make gcp-deploy-frontend                # static export with an empty API base → Firebase Hosting
 ```
 
@@ -490,7 +491,7 @@ make gcp-deploy-frontend                # static export with an empty API base �
   that, as `infra/` does for the Lambdas. Deploys go by digest.
 - **The data was loaded with migrations + seed, not `pg_dump`** (ADR 0008).
   The job `spry-migrate` runs `alembic upgrade head`, then its args:
-  `alembic current` by default, or `python -m app.seed <sub>` for
+  `alembic current` by default, or `python -m app.seed <sub> [date]` for
   `make gcp-seed`. The service itself never migrates on start.
 - **One origin, no CORS.** `firebase.json` rewrites `/api/**` and `/health` to
   the Cloud Run service, so the export is built with
