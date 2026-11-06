@@ -1,6 +1,8 @@
 # ADR 0008: The core of Spry on Google Cloud, and what stays on AWS
 
-- **Status:** Accepted 2026-11-05; being built on the `lab9` branch
+- **Status:** Accepted. Built and deployed on 2026-11-05 in
+  [PR #2](https://github.com/TarasKonoval/spry/pull/2); live at
+  https://spry-taras-2026.web.app.
 - **Date:** 2026-11-05
 - **Lab:** LAB9, Parts 1–2
 

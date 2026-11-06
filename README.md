@@ -523,6 +523,9 @@ List prices in `us-central1`, checked 2026-11-05.
 A forgotten instance costs about $9.40 a month running, or about $9.00
 stopped, because of the IP charge. Destroy it when the lab is over.
 
+The comparison with AWS for the four Lab 4 traffic profiles, line by line, is
+in [docs/cost/lab9-aws-vs-gcp.md](docs/cost/lab9-aws-vs-gcp.md).
+
 ### Stop, start, destroy
 
 ```bash
